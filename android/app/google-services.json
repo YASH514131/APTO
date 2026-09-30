@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "375942743522",
+    "project_id": "apto-notification",
+    "storage_bucket": "apto-notification.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:375942743522:android:356688bdb90e92056765bb",
+        "android_client_info": {
+          "package_name": "com.apto"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjWsytPQKc4_MdCrmuKu6lOXtPHtHrFeU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
