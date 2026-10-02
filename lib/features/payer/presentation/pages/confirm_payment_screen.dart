@@ -4,7 +4,6 @@ import '../../../../core/animation/animated_pressable.dart';
 import '../../../../core/animation/staggered_entrance.dart';
 import '../../../wallet/domain/models/wallet_provider.dart';
 import '../../../wallet/services/wallet_adapter_service.dart';
-import '../../../wallet/presentation/widgets/wallet_selector_sheet.dart';
 
 class ConfirmPaymentScreen extends StatelessWidget {
   final String recipient;
@@ -121,18 +120,6 @@ class ConfirmPaymentScreen extends StatelessWidget {
                                     ],
                                   ),
                                 ],
-                              ),
-                              TextButton(
-                                onPressed: () => WalletSelectorSheet.show(context),
-                                style: TextButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                  minimumSize: Size.zero,
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                ),
-                                child: Text(
-                                  'Change',
-                                  style: AppTheme.sansBody(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.seedVaultTeal),
-                                ),
                               ),
                             ],
                           );

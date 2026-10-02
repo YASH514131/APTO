@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -7,13 +8,15 @@ import 'package:solana/base58.dart';
 import '../domain/models/wallet_provider.dart';
 import '../domain/models/wallet_transaction.dart';
 import '../domain/models/wallet_transaction_details.dart';
+import '../domain/models/financial_insights.dart';
 import '../../solana_pay/services/mwa_signing_service.dart';
 import '../../terminal/services/hce_service.dart';
-import '../../../core/constants/solana_config.dart';
+import '../../../core/services/apto_backend_rpc_client.dart';
 import '../../../core/services/apto_audio_service.dart';
+import '../../../core/services/apto_fcm_service.dart';
+import '../../../core/constants/solana_config.dart';
 import 'apto_transaction_store.dart';
-import 'helius_fund_watcher_service.dart';
-import '../../../core/services/apto_background_service.dart';
+import 'financial_insights_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WalletAdapterService {
@@ -42,30 +45,36 @@ class WalletAdapterService {
   static const _walletAddressKey = 'mwa_wallet_address';
   static const _walletProviderKey = 'mwa_wallet_provider_id';
   static const _sessionTimestampKey = 'mwa_session_timestamp';
+  static const _recentTransactionsCachePrefix = 'apto_recent_transactions_v1_';
+  static const _recentTransactionsScanPrefix =
+      'apto_recent_transactions_scan_v1_';
+  static const Duration _recentTransactionsCacheDuration =
+      Duration(seconds: 45);
 
   /// Keep session connected for 30 days without re-authenticating
   static const Duration sessionValidityPeriod = Duration(days: 30);
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   String? _authToken;
+  Future<void>? _balanceRequest;
+  String? _balanceRequestAddress;
+  DateTime? _balanceUpdatedAt;
+  Future<List<WalletTransaction>>? _recentTransactionsRequest;
+  String? _recentTransactionsRequestAddress;
+  String? _recentTransactionsCacheAddress;
+  DateTime? _recentTransactionsCachedAt;
+  List<WalletTransaction>? _recentTransactionsCache;
 
   WalletProvider get activeWallet => activeWalletNotifier.value;
   String get currentPublicKey => fullAddressNotifier.value;
   bool get isConnected => isConnectedNotifier.value;
 
-  SolanaClient get _solanaClient => SolanaClient(
-        rpcUrl: Uri.parse(SolanaConfig.activeRpcUrl),
-        websocketUrl: Uri.parse(SolanaConfig.activeWebSocketUrl),
-      );
+  RpcClient get _rpcClient => AptoBackendRpcClient.create();
+  RpcClient get _devnetRpcClient => RpcClient(SolanaConfig.devnetRpcUrl);
 
   /// Restores saved wallet session if still within the 30-day validity window
   Future<bool> initialize() async {
     try {
-      final savedHeliusKey = await _secureStorage.read(key: 'helius_api_key');
-      if (savedHeliusKey != null && savedHeliusKey.isNotEmpty) {
-        SolanaConfig.heliusApiKey = savedHeliusKey;
-      }
-
       final savedAddress = await _secureStorage.read(key: _walletAddressKey);
       final timestampStr = await _secureStorage.read(key: _sessionTimestampKey);
       final providerId = await _secureStorage.read(key: _walletProviderKey);
@@ -135,13 +144,12 @@ class WalletAdapterService {
     isConnectedNotifier.value = address.isNotEmpty;
     HceService.setReceiverAddress(address: address);
     refreshBalance();
+    FinancialInsightsService.instance.loadInsights();
 
     if (address.isNotEmpty) {
-      HeliusFundWatcherService.instance.startWatching(address);
-      AptoBackgroundService.instance.updateWatchedAddress(address);
+      unawaited(AptoFcmService.instance.registerWallet(address));
     } else {
-      HeliusFundWatcherService.instance.stopWatching();
-      AptoBackgroundService.instance.updateWatchedAddress('');
+      unawaited(AptoFcmService.instance.unregisterWallet());
     }
 
     if (persist && address.isNotEmpty) {
@@ -152,7 +160,8 @@ class WalletAdapterService {
   Future<void> _persistSession(String address, String providerId) async {
     try {
       await _secureStorage.write(key: _walletAddressKey, value: address);
-      await _secureStorage.write(key: 'apto_connected_wallet_address', value: address);
+      await _secureStorage.write(
+          key: 'apto_connected_wallet_address', value: address);
       await _secureStorage.write(key: _walletProviderKey, value: providerId);
       await _secureStorage.write(
         key: _sessionTimestampKey,
@@ -185,28 +194,85 @@ class WalletAdapterService {
     solBalanceNotifier.value = 0.0;
     usdcBalanceNotifier.value = 0.0;
     isConnectedNotifier.value = false;
+    FinancialInsightsService.instance.insightsNotifier.value =
+        FinancialInsights.empty();
     HceService.setReceiverAddress(address: '');
-    HeliusFundWatcherService.instance.stopWatching();
-    AptoBackgroundService.instance.updateWatchedAddress('');
+    unawaited(AptoFcmService.instance.unregisterWallet());
   }
 
   /// Queries real Solana Devnet RPC to fetch live SOL balance
-  Future<void> refreshBalance() async {
+  Future<void> refreshBalance() {
+    final address = fullAddressNotifier.value;
+    if (address.isEmpty) return Future<void>.value();
+
+    if (_balanceRequest != null && _balanceRequestAddress == address) {
+      return _balanceRequest!;
+    }
+    if (_balanceRequestAddress == address &&
+        _balanceUpdatedAt != null &&
+        DateTime.now().difference(_balanceUpdatedAt!) <
+            const Duration(seconds: 15)) {
+      return Future<void>.value();
+    }
+
+    _balanceRequestAddress = address;
+    final request = _refreshBalance(address);
+    _balanceRequest = request;
+    return request.whenComplete(() {
+      if (identical(_balanceRequest, request)) _balanceRequest = null;
+    });
+  }
+
+  Future<void> _refreshBalance(String pubKeyStr) async {
+    isBalanceLoadingNotifier.value = true;
+
+    // 1. Instant cache load (0ms) so user sees previous balance immediately
     try {
-      isBalanceLoadingNotifier.value = true;
-      final pubKeyStr = fullAddressNotifier.value;
+      final prefs = await SharedPreferences.getInstance();
+      final cachedBalance =
+          prefs.getDouble('apto_cached_sol_balance_$pubKeyStr');
+      if (cachedBalance != null &&
+          fullAddressNotifier.value == pubKeyStr &&
+          solBalanceNotifier.value == 0.0) {
+        solBalanceNotifier.value = cachedBalance;
+        usdcBalanceNotifier.value = cachedBalance * 180.0;
+      }
+    } catch (_) {}
 
-      // Query RPC for account info
-      final result = await _solanaClient.rpcClient.getBalance(pubKeyStr);
-      final solVal = result.value / lamportsPerSol;
-
-      solBalanceNotifier.value = solVal;
-      // Derive USDC equivalent display (e.g. 1 SOL = ~180 USDC simulated rate for Devnet)
-      usdcBalanceNotifier.value = solVal * 180.0;
-    } catch (e) {
+    // 2. Fetch live balance with high-speed direct Devnet RPC first (~200ms)
+    // to bypass Render backend cold-start delays (30s).
+    double? liveSolVal;
+    try {
+      final directRpc = RpcClient(SolanaConfig.devnetRpcUrl);
+      final result = await directRpc
+          .getBalance(pubKeyStr)
+          .timeout(const Duration(seconds: 4));
+      liveSolVal = result.value / lamportsPerSol;
+    } catch (directError) {
       debugPrint(
-          'RPC Balance Fetch Note (Address may be unfunded on Devnet): $e');
-      // Keep present balance state if unfunded new address
+          'Direct Devnet RPC failed or timed out: $directError. Falling back to backend proxy...');
+      // Fallback to backend proxy only if direct Devnet RPC fails
+      try {
+        final result = await AptoBackendRpcClient.run(
+          () => _rpcClient.getBalance(pubKeyStr),
+        ).timeout(const Duration(seconds: 12));
+        liveSolVal = result.value / lamportsPerSol;
+      } catch (backendError) {
+        debugPrint('Backend balance proxy also failed: $backendError');
+      }
+    }
+
+    try {
+      if (liveSolVal != null && fullAddressNotifier.value == pubKeyStr) {
+        solBalanceNotifier.value = liveSolVal;
+        _balanceUpdatedAt = DateTime.now();
+        usdcBalanceNotifier.value = liveSolVal * 180.0;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setDouble(
+              'apto_cached_sol_balance_$pubKeyStr', liveSolVal);
+        } catch (_) {}
+      }
     } finally {
       isBalanceLoadingNotifier.value = false;
     }
@@ -216,29 +282,79 @@ class WalletAdapterService {
 
   Future<List<WalletTransaction>> fetchRecentTransactions({
     int limit = 10,
-  }) async {
+  }) {
     final address = fullAddressNotifier.value;
+    if (address.isEmpty) return Future.value(const []);
+
+    if (_recentTransactionsRequest != null &&
+        _recentTransactionsRequestAddress == address) {
+      return _recentTransactionsRequest!;
+    }
+    if (_recentTransactionsCacheAddress == address &&
+        _recentTransactionsCache != null &&
+        _recentTransactionsCachedAt != null &&
+        DateTime.now().difference(_recentTransactionsCachedAt!) <
+            _recentTransactionsCacheDuration) {
+      return Future.value(_recentTransactionsCache);
+    }
+
+    _recentTransactionsRequestAddress = address;
+    final request = _loadRecentTransactions(address, limit);
+    _recentTransactionsRequest = request;
+    return request.whenComplete(() {
+      if (identical(_recentTransactionsRequest, request)) {
+        _recentTransactionsRequest = null;
+      }
+    });
+  }
+
+  Future<List<WalletTransaction>> _loadRecentTransactions(
+    String address,
+    int limit,
+  ) async {
     if (address.isEmpty) return const [];
 
     final localTransactions = await AptoTransactionStore.readAll();
-    final localMap = {for (var tx in localTransactions) tx.signature: tx};
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = '$_recentTransactionsCachePrefix$address';
+    final scanKey = '$_recentTransactionsScanPrefix$address';
+    final lastScanEpoch = prefs.getInt(scanKey) ?? 0;
+    List<WalletTransaction> cachedTransactions = [];
 
     try {
-      final signatures = await _solanaClient.rpcClient.getSignaturesForAddress(
-        address,
-        limit: limit,
+      final rawCache = prefs.getString(cacheKey);
+      if (rawCache != null) {
+        cachedTransactions = (jsonDecode(rawCache) as List<dynamic>)
+            .map((value) => WalletTransaction.fromJson(
+                Map<String, dynamic>.from(value as Map)))
+            .toList();
+      }
+    } catch (e) {
+      debugPrint('Error decoding cached recent transactions: $e');
+    }
+
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (lastScanEpoch > 0 &&
+        nowMs - lastScanEpoch <
+            _recentTransactionsCacheDuration.inMilliseconds) {
+      final results = _mergeRecentTransactions(
+        cachedTransactions,
+        localTransactions,
       );
+      _cacheRecentTransactions(address, results);
+      return results;
+    }
+
+    try {
+      final signatures = await _devnetRpcClient
+          .getSignaturesForAddress(address, limit: limit)
+          .timeout(const Duration(seconds: 15));
 
       final List<WalletTransaction> results = [];
 
       for (var i = 0; i < signatures.length; i++) {
         final txInfo = signatures[i];
         final sig = txInfo.signature;
-
-        if (localMap.containsKey(sig)) {
-          results.add(localMap[sig]!);
-          continue;
-        }
 
         if (_txDetailCache.containsKey(sig)) {
           results.add(_txDetailCache[sig]!);
@@ -247,7 +363,10 @@ class WalletAdapterService {
 
         WalletTransaction? resolved;
         try {
-          final details = await _solanaClient.rpcClient.getTransaction(sig);
+          await Future.delayed(const Duration(milliseconds: 100));
+          final details = await _devnetRpcClient
+              .getTransaction(sig)
+              .timeout(const Duration(seconds: 4));
           if (details != null && details.meta != null) {
             final pre = details.meta!.preBalances;
             final post = details.meta!.postBalances;
@@ -258,18 +377,22 @@ class WalletAdapterService {
             int myIndex = -1;
             if (accountKeys is List) {
               for (var idx = 0; idx < accountKeys.length; idx++) {
-                final key = accountKeys[idx];
-                String keyStr = key.toString();
-                if (key is String) {
-                  keyStr = key;
-                } else {
-                  try {
-                    final dynamic pk = (key as dynamic).pubkey;
-                    if (pk != null) keyStr = pk.toString();
-                  } catch (_) {}
-                }
-                if (keyStr == address) {
+                if (FinancialInsightsService.extractAccountPubkey(
+                        accountKeys[idx]) ==
+                    address) {
                   myIndex = idx;
+                  break;
+                }
+              }
+            }
+
+            if (myIndex == -1 && details.meta!.loadedAddresses != null) {
+              final loaded = details.meta!.loadedAddresses!;
+              final loadedKeys = [...loaded.writable, ...loaded.readonly];
+              for (var idx = 0; idx < loadedKeys.length; idx++) {
+                if (loadedKeys[idx] == address) {
+                  myIndex =
+                      (accountKeys is List ? accountKeys.length : 0) + idx;
                   break;
                 }
               }
@@ -278,22 +401,33 @@ class WalletAdapterService {
             if (myIndex >= 0 && myIndex < pre.length && myIndex < post.length) {
               final delta = post[myIndex] - pre[myIndex];
               final isSent = delta < 0;
-              final amt = delta.abs() / lamportsPerSol;
+              final isSuccessful =
+                  details.meta!.err == null && txInfo.err == null;
+              final fee = myIndex == 0 ? details.meta!.fee : 0;
+              final amt = !isSuccessful
+                  ? 0.0
+                  : isSent
+                      ? (delta.abs() - fee).clamp(0, double.infinity) /
+                          lamportsPerSol
+                      : (delta + (myIndex == 0 ? details.meta!.fee : 0)) /
+                          lamportsPerSol;
 
               String otherParty = '';
               if (accountKeys is List && accountKeys.length > 1) {
                 final otherIdx = isSent ? 1 : 0;
-                if (otherIdx < accountKeys.length) {
-                  otherParty = accountKeys[otherIdx].toString();
+                if (otherIdx < accountKeys.length && otherIdx != myIndex) {
+                  otherParty = FinancialInsightsService.extractAccountPubkey(
+                    accountKeys[otherIdx],
+                  );
                 }
               }
 
               resolved = WalletTransaction(
                 signature: sig,
                 memo: txInfo.memo,
-                blockTime: txInfo.blockTime,
-                isSuccessful: txInfo.err == null,
-                amount: amt > 0 ? amt : 0.05,
+                blockTime: txInfo.blockTime ?? details.blockTime,
+                isSuccessful: isSuccessful,
+                amount: amt,
                 type: isSent ? TransactionType.sent : TransactionType.received,
                 counterparty: otherParty,
               );
@@ -301,44 +435,59 @@ class WalletAdapterService {
           }
         } catch (_) {}
 
-        if (resolved == null) {
-          final hash = sig.hashCode.abs();
-          final isSent = (hash % 2) == 0;
-          final sampleAmounts = [0.10, 0.25, 0.50, 0.75, 1.00, 1.25, 0.05];
-          final amt = sampleAmounts[hash % sampleAmounts.length];
-          final shortSig = sig.length > 8 ? sig.substring(0, 6) : 'Solana';
-
-          resolved = WalletTransaction(
-            signature: sig,
-            memo: txInfo.memo,
-            blockTime: txInfo.blockTime,
-            isSuccessful: txInfo.err == null,
-            amount: amt,
-            type: isSent ? TransactionType.sent : TransactionType.received,
-            counterparty: shortSig,
-          );
-        }
-
-        _txDetailCache[sig] = resolved;
-        results.add(resolved);
-      }
-
-      for (final local in localTransactions) {
-        if (!results.any((r) => r.signature == local.signature)) {
-          results.insert(0, local);
+        if (resolved != null) {
+          _txDetailCache[sig] = resolved;
+          results.add(resolved);
         }
       }
 
-      return results;
+      final mergedResults =
+          _mergeRecentTransactions(results, localTransactions);
+      await prefs.setString(
+        cacheKey,
+        jsonEncode(mergedResults.map((tx) => tx.toJson()).toList()),
+      );
+      await prefs.setInt(scanKey, DateTime.now().millisecondsSinceEpoch);
+      _cacheRecentTransactions(address, mergedResults);
+      return mergedResults;
     } catch (e) {
       debugPrint('Error fetching recent transactions: $e');
-      return localTransactions;
+      final fallback = _mergeRecentTransactions(
+        cachedTransactions,
+        localTransactions,
+      );
+      _cacheRecentTransactions(address, fallback);
+      return fallback;
     }
+  }
+
+  List<WalletTransaction> _mergeRecentTransactions(
+    List<WalletTransaction> transactions,
+    List<WalletTransaction> localTransactions,
+  ) {
+    final merged = List<WalletTransaction>.from(transactions);
+    for (final local in localTransactions) {
+      if (!merged.any((tx) => tx.signature == local.signature)) {
+        merged.insert(0, local);
+      }
+    }
+    return merged;
+  }
+
+  void _cacheRecentTransactions(
+    String address,
+    List<WalletTransaction> transactions,
+  ) {
+    _recentTransactionsCacheAddress = address;
+    _recentTransactionsCache = List.unmodifiable(transactions);
+    _recentTransactionsCachedAt = DateTime.now();
   }
 
   Future<WalletTransactionDetails?> fetchTransactionDetails(
       String signature) async {
-    final details = await _solanaClient.rpcClient.getTransaction(signature);
+    final details = await AptoBackendRpcClient.run(
+      () => _rpcClient.getTransaction(signature),
+    );
     if (details == null) return null;
 
     return WalletTransactionDetails(
@@ -356,9 +505,11 @@ class WalletAdapterService {
       isBalanceLoadingNotifier.value = true;
       final pubKeyStr = fullAddressNotifier.value;
 
-      final txSignature = await _solanaClient.rpcClient.requestAirdrop(
-        pubKeyStr,
-        lamportsPerSol,
+      final txSignature = await AptoBackendRpcClient.run(
+        () => _rpcClient.requestAirdrop(
+          pubKeyStr,
+          lamportsPerSol,
+        ),
       );
 
       debugPrint('Devnet Airdrop Requested! Signature: $txSignature');
@@ -400,9 +551,6 @@ class WalletAdapterService {
 
     // Signal watchers that a send is happening — activates cooldown to prevent
     // false "received" notifications from stale RPC responses
-    HeliusFundWatcherService.instance.notifySendInitiated();
-    AptoBackgroundService.instance.notifySend();
-
     // Attempt MWA standard signing with current auth token
     List<int>? result;
     try {
@@ -418,18 +566,22 @@ class WalletAdapterService {
     }
 
     if (result == null) {
-      debugPrint('MWA signing returned null — user may have cancelled or auth expired.');
+      debugPrint(
+          'MWA signing returned null — user may have cancelled or auth expired.');
       return null;
     }
 
     // If signing succeeded, refresh the auth token for future operations
     // This ensures the next sign call uses a valid token
-    _refreshAuthTokenInBackground(identityName: '$identityName via ${selected.name}');
+    _refreshAuthTokenInBackground(
+        identityName: '$identityName via ${selected.name}');
 
     try {
       // Broadcast signed transaction to Solana Devnet RPC
-      final txSig = await _solanaClient.rpcClient.sendTransaction(
-        base64Encode(result),
+      final txSig = await AptoBackendRpcClient.run(
+        () => _rpcClient.sendTransaction(
+          base64Encode(result!),
+        ),
       );
       lastTransactionSignatureNotifier.value = txSig;
       debugPrint(
