@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">APTO</string>
+    <string name="hce_service_description">APTO Solana Tap-to-Pay HCE Service</string>
+    <string name="hce_aid_description">APTO Solana Pay NFC Terminal</string>
+</resources>

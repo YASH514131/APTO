@@ -13,6 +13,9 @@ class AptoHostApduService : HostApduService() {
         private val SELECT_APDU_HEADER = byteArrayOf(
             0x00.toByte(), 0xA4.toByte(), 0x04.toByte(), 0x00.toByte()
         )
+        private val APTO_AID = byteArrayOf(
+            0xF2.toByte(), 0x22.toByte(), 0x22.toByte(), 0x22.toByte(), 0x22.toByte()
+        )
         
         // Dynamic payload configured via MethodChannel from Flutter
         @JvmStatic
@@ -37,8 +40,10 @@ class AptoHostApduService : HostApduService() {
             currentSolanaPayPayload = if (storedPayload.isNotEmpty()) storedPayload else storedAddress
         }
         if (commandApdu == null) return FAILURE_SW
-        
-        Log.d(TAG, "APDU Command received: ${commandApdu.toHexString()}")
+
+        // Only answer APTO's ISO-7816 SELECT command. No write APDU is exposed,
+        // so an NFC reader cannot modify the configured payload.
+        if (!isAptoSelectCommand(commandApdu)) return FAILURE_SW
 
         // Check if payload is ready
         if (currentSolanaPayPayload.isEmpty()) {
@@ -55,11 +60,28 @@ class AptoHostApduService : HostApduService() {
         return payloadBytes + SUCCESS_SW
     }
 
+    private fun isAptoSelectCommand(commandApdu: ByteArray): Boolean {
+        if (commandApdu.size < SELECT_APDU_HEADER.size + 1 + APTO_AID.size) {
+            return false
+        }
+
+        for (index in SELECT_APDU_HEADER.indices) {
+            if (commandApdu[index] != SELECT_APDU_HEADER[index]) return false
+        }
+
+        val aidLength = commandApdu[SELECT_APDU_HEADER.size].toInt() and 0xFF
+        if (aidLength != APTO_AID.size) return false
+
+        val aidStart = SELECT_APDU_HEADER.size + 1
+        for (index in APTO_AID.indices) {
+            if (commandApdu[aidStart + index] != APTO_AID[index]) return false
+        }
+
+        return true
+    }
+
     override fun onDeactivated(reason: Int) {
         Log.d(TAG, "HCE Service Deactivated. Reason code: $reason")
     }
 
-    private fun ByteArray.toHexString(): String {
-        return joinToString("") { "%02x".format(it) }
-    }
 }
