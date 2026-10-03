@@ -35,25 +35,53 @@ class SolanaPayRequest {
     );
   }
 
-  /// Parses APDU byte response payload in format: "PAYLOAD|TIMESTAMP"
+  /// Parses APDU byte response payload in format: "PAYLOAD|TIMESTAMP" or raw URL
   factory SolanaPayRequest.fromApduString(String rawString) {
-    final parts = rawString.split('|');
-    if (parts.length < 2) {
-      throw FormatException('Invalid APDU payload format: $rawString');
+    String urlString = rawString.trim();
+    int timestampMs = DateTime.now().millisecondsSinceEpoch;
+
+    final lastPipeIndex = urlString.lastIndexOf('|');
+    if (lastPipeIndex != -1) {
+      final potentialTimestamp =
+          int.tryParse(urlString.substring(lastPipeIndex + 1));
+      if (potentialTimestamp != null) {
+        timestampMs = potentialTimestamp;
+        urlString = urlString.substring(0, lastPipeIndex).trim();
+      }
     }
 
-    final urlString = parts[0];
-    final timestampMs =
-        int.tryParse(parts[1]) ?? DateTime.now().millisecondsSinceEpoch;
+    final uri = Uri.tryParse(urlString);
+    String recipient = '';
+    double amount = 0.0;
+    String reference = '';
+    String label = 'APTO Merchant';
+    String message = 'NFC Tap-to-Pay';
+    bool isAddressOnly = false;
 
-    final uri = Uri.parse(urlString);
-    final recipient = uri.path.replaceAll('solana:', '');
-    final amount =
-        double.tryParse(uri.queryParameters['amount'] ?? '0.0') ?? 0.0;
-    final reference = uri.queryParameters['reference'] ?? '';
-    final label = uri.queryParameters['label'] ?? 'APTO Merchant';
-    final message = uri.queryParameters['message'] ?? 'NFC Tap-to-Pay';
-    final isAddressOnly = uri.queryParameters['mode'] == 'address';
+    if (uri != null) {
+      recipient =
+          uri.path.replaceAll('solana:', '').replaceAll('/', '').trim();
+      if (recipient.isEmpty && uri.host.isNotEmpty) {
+        recipient = uri.host.trim();
+      }
+      amount =
+          double.tryParse(uri.queryParameters['amount'] ?? '0.0') ?? 0.0;
+      reference = uri.queryParameters['reference'] ?? '';
+      label = uri.queryParameters['label'] ?? 'APTO Merchant';
+      message = uri.queryParameters['message'] ?? 'NFC Tap-to-Pay';
+      isAddressOnly =
+          uri.queryParameters['mode'] == 'address' || amount <= 0.0;
+    }
+
+    if (recipient.isEmpty) {
+      recipient = urlString
+          .replaceAll('solana:', '')
+          .split('?')
+          .first
+          .replaceAll('/', '')
+          .trim();
+      isAddressOnly = true;
+    }
 
     return SolanaPayRequest(
       recipient: recipient,

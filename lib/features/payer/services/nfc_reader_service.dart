@@ -25,30 +25,53 @@ class NfcReaderService {
   }) async {
     try {
       await NfcManager.instance.startSession(
-        pollingOptions: {NfcPollingOption.iso14443},
+        pollingOptions: {
+          NfcPollingOption.iso14443,
+          NfcPollingOption.iso15693,
+          NfcPollingOption.iso18092,
+        },
         invalidateAfterFirstRead: true,
         onDiscovered: (tag) async {
+          // 1. Try APTO custom APDU via IsoDep (Android HCE peer-to-peer / terminal)
           final isoDep = IsoDep.from(tag);
-          if (isoDep == null) {
-            await onError('This NFC device does not support APDU transfer.');
-            return;
-          }
-
-          try {
-            final response = await isoDep.transceive(data: _selectAptoAid);
-            if (response.length <= 2 ||
-                response[response.length - 2] != 0x90 ||
-                response[response.length - 1] != 0x00) {
-              await onError('NFC terminal rejected the APTO request.');
-              return;
+          if (isoDep != null) {
+            try {
+              final response = await isoDep.transceive(data: _selectAptoAid);
+              if (response.length > 2 &&
+                  response[response.length - 2] == 0x90 &&
+                  response[response.length - 1] == 0x00) {
+                final payload =
+                    utf8.decode(response.sublist(0, response.length - 2));
+                await onPayload(payload);
+                return;
+              }
+            } catch (error) {
+              // Fall through to NDEF check if APDU transceive fails
             }
-
-            final payload =
-                utf8.decode(response.sublist(0, response.length - 2));
-            await onPayload(payload);
-          } catch (error) {
-            await onError('Could not read the NFC payment request: $error');
           }
+
+          // 2. Try standard NDEF NFC tag (Solana Pay standard sticker / card)
+          final ndef = Ndef.from(tag);
+          if (ndef != null) {
+            try {
+              final message = ndef.cachedMessage ?? await ndef.read();
+              for (final record in message.records) {
+                final payloadString =
+                    utf8.decode(record.payload, allowMalformed: true);
+                if (payloadString.contains('solana:')) {
+                  final solanaIndex = payloadString.indexOf('solana:');
+                  final cleanUrl = payloadString.substring(solanaIndex);
+                  await onPayload(
+                      '$cleanUrl|${DateTime.now().millisecondsSinceEpoch}');
+                  return;
+                }
+              }
+            } catch (ndefError) {
+              // Ignore and fall through to error
+            }
+          }
+
+          await onError('Could not read payment request from NFC device.');
         },
       );
     } catch (error) {

@@ -3,13 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'core/theme/app_theme.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'core/constants/solana_config.dart';
 import 'features/payer/presentation/pages/home_dashboard_page.dart';
 import 'features/terminal/presentation/pages/terminal_page.dart';
 import 'features/payer/presentation/pages/tap_reader_page.dart';
 import 'core/services/apto_notification_service.dart';
 import 'core/services/apto_fcm_service.dart';
-import 'core/services/apto_background_service.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'features/rewards/presentation/pages/skr_reward_page.dart';
@@ -21,13 +19,6 @@ void main() async {
 
   // Initialize Android system notification service & channel
   await AptoNotificationService.instance.initialize();
-
-  // Initialize 24/7 On-Device Background Service for closed-app alerts
-  try {
-    await AptoBackgroundService.instance.initialize();
-  } catch (e) {
-    debugPrint('Background service initialization note: $e');
-  }
 
   // Initialize Firebase & FCM Cloud Messaging
   try {
@@ -43,10 +34,6 @@ void main() async {
 
   try {
     await dotenv.load(fileName: ".env");
-    final envKey = dotenv.env['HELIUS_API_KEY'];
-    if (envKey != null && envKey.trim().isNotEmpty) {
-      SolanaConfig.heliusApiKey = envKey.trim();
-    }
   } catch (e) {
     debugPrint('Note: .env file not loaded: $e');
   }
@@ -95,12 +82,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     // Prompt for notification permissions on Android 13+ / iOS once UI is mounted
     WidgetsBinding.instance.addPostFrameCallback((_) {
       AptoNotificationService.instance.requestPermission();
-
-      // Self-heal: restart background service if it was killed by Android
-      final addr = WalletAdapterService.instance.fullAddressNotifier.value;
-      if (addr.isNotEmpty) {
-        AptoBackgroundService.instance.ensureRunning(addr);
-      }
     });
   }
 

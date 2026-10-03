@@ -1,26 +1,25 @@
 import 'dart:async';
 import 'package:solana/solana.dart';
-import '../../../core/constants/solana_config.dart';
+import '../../../core/services/apto_backend_rpc_client.dart';
 
 class ReferencePoller {
-  final SolanaClient _client = SolanaClient(
-    rpcUrl: Uri.parse(SolanaConfig.activeRpcUrl),
-    websocketUrl: Uri.parse(SolanaConfig.activeRpcUrl.replaceAll('https', 'wss')),
-  );
+  final RpcClient _client = AptoBackendRpcClient.create();
 
   /// Polls Solana RPC for a transaction referencing [referencePublicKey]
   Future<String?> pollForConfirmation({
     required String referencePublicKey,
-    Duration pollInterval = const Duration(seconds: 2),
-    int maxAttempts = 30,
+    Duration pollInterval = const Duration(seconds: 5),
+    int maxAttempts = 12,
   }) async {
     int attempts = 0;
 
     while (attempts < maxAttempts) {
       try {
-        final signatures = await _client.rpcClient.getSignaturesForAddress(
-          referencePublicKey,
-          limit: 1,
+        final signatures = await AptoBackendRpcClient.run(
+          () => _client.getSignaturesForAddress(
+            referencePublicKey,
+            limit: 1,
+          ),
         );
 
         if (signatures.isNotEmpty) {

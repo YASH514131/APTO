@@ -1,7 +1,7 @@
 import 'package:solana/solana.dart';
 import 'package:solana/encoder.dart';
 import '../models/solana_pay_request.dart';
-import '../../../core/constants/solana_config.dart';
+import '../../../core/services/apto_backend_rpc_client.dart';
 
 class TransactionBuilder {
   /// Assembles an unsigned Solana Pay transaction with payment transfer + reference key
@@ -9,13 +9,10 @@ class TransactionBuilder {
     required String payerPublicKey,
     required SolanaPayRequest request,
   }) async {
-    final client = SolanaClient(
-      rpcUrl: Uri.parse(SolanaConfig.activeRpcUrl),
-      websocketUrl:
-          Uri.parse(SolanaConfig.activeRpcUrl.replaceAll('https', 'wss')),
+    final rpcClient = AptoBackendRpcClient.create();
+    final recentBlockhash = await AptoBackendRpcClient.run(
+      rpcClient.getLatestBlockhash,
     );
-
-    final recentBlockhash = await client.rpcClient.getLatestBlockhash();
 
     final payerPubKey = Ed25519HDPublicKey.fromBase58(payerPublicKey);
     final recipientPubKey = Ed25519HDPublicKey.fromBase58(request.recipient);
@@ -33,7 +30,8 @@ class TransactionBuilder {
       try {
         final referencePubKey =
             Ed25519HDPublicKey.fromBase58(request.reference.trim());
-        accounts.add(AccountMeta.readonly(pubKey: referencePubKey, isSigner: false));
+        accounts.add(
+            AccountMeta.readonly(pubKey: referencePubKey, isSigner: false));
       } catch (_) {
         // If reference is not a valid base58 pubkey, continue with standard transfer
       }

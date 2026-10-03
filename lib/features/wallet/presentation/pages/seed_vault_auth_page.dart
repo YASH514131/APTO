@@ -4,6 +4,7 @@ import '../../../../core/animation/animated_pressable.dart';
 import '../../../../core/animation/staggered_entrance.dart';
 import '../../domain/models/wallet_provider.dart';
 import '../../services/wallet_adapter_service.dart';
+import '../../../../shared/widgets/app_error_dialog.dart';
 
 class SeedVaultAuthPage extends StatefulWidget {
   final VoidCallback onConnected;
@@ -49,11 +50,11 @@ class _SeedVaultAuthPageState extends State<SeedVaultAuthPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Connection note: $e'),
-            backgroundColor: Colors.orangeAccent,
-          ),
+        AppErrorDialog.show(
+          context,
+          title: 'Could not connect wallet',
+          technicalMessage: e.toString(),
+          isWarning: true,
         );
       }
     } finally {

@@ -6,6 +6,7 @@ import '../../../../core/animation/staggered_entrance.dart';
 import '../../bloc/terminal_bloc.dart';
 import '../../../wallet/services/wallet_adapter_service.dart';
 import '../../../../shared/widgets/transaction_success_dialog.dart';
+import '../../../../shared/widgets/app_error_dialog.dart';
 
 class TerminalPage extends StatefulWidget {
   const TerminalPage({super.key});
@@ -108,6 +109,12 @@ class _TerminalPageState extends State<TerminalPage> {
                       );
                     }
                   });
+                } else if (state is TerminalErrorState) {
+                  AppErrorDialog.show(
+                    context,
+                    title: 'Could not confirm payment',
+                    technicalMessage: state.message,
+                  );
                 }
               },
               builder: (context, state) {
@@ -117,223 +124,228 @@ class _TerminalPageState extends State<TerminalPage> {
                   bottom: false,
                   child: SingleChildScrollView(
                     padding: EdgeInsets.only(
-                        left: 24.0, right: 24.0, top: 12.0,
+                        left: 24.0,
+                        right: 24.0,
+                        top: 12.0,
                         bottom: MediaQuery.of(context).padding.bottom + 100),
                     child: Column(
-                  children: [
-                    // Amount Card with smooth neon glow transition
-                    StaggeredEntrance(
-                      index: 0,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 380),
-                        curve: Curves.easeInOutCubic,
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 20, horizontal: 24),
-                        decoration: BoxDecoration(
-                          color: AppTheme.cardBg,
-                          borderRadius: BorderRadius.circular(24),
-                          border: Border.all(
-                            color: isBroadcasting
-                                ? AppTheme.seedVaultTeal
-                                : Colors.white.withValues(alpha: 0.06),
-                            width: 1.5,
+                      children: [
+                        // Amount Card with smooth neon glow transition
+                        StaggeredEntrance(
+                          index: 0,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 380),
+                            curve: Curves.easeInOutCubic,
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 20, horizontal: 24),
+                            decoration: BoxDecoration(
+                              color: AppTheme.cardBg,
+                              borderRadius: BorderRadius.circular(24),
+                              border: Border.all(
+                                color: isBroadcasting
+                                    ? AppTheme.seedVaultTeal
+                                    : Colors.white.withValues(alpha: 0.06),
+                                width: 1.5,
+                              ),
+                              boxShadow: isBroadcasting
+                                  ? [
+                                      BoxShadow(
+                                        color: AppTheme.seedVaultTeal
+                                            .withValues(alpha: 0.25),
+                                        blurRadius: 22,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : [],
+                            ),
+                            child: Column(
+                              children: [
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 300),
+                                  child: Text(
+                                    isBroadcasting
+                                        ? 'ACTIVE HCE NFC BROADCAST'
+                                        : 'ENTER CHARGE AMOUNT',
+                                    key: ValueKey<bool>(isBroadcasting),
+                                    style: AppTheme.sansBody(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: isBroadcasting
+                                          ? AppTheme.seedVaultTeal
+                                          : AppTheme.textSecondary,
+                                      letterSpacing: 1.1,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
+                                    children: [
+                                      Text(
+                                        _amount,
+                                        style: AppTheme.serifHeading(
+                                            fontSize: 40,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'SOL',
+                                        style: AppTheme.sansBody(
+                                            fontSize: 18,
+                                            color: AppTheme.textSecondary),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                          boxShadow: isBroadcasting
-                              ? [
-                                  BoxShadow(
-                                    color: AppTheme.seedVaultTeal
-                                        .withValues(alpha: 0.25),
-                                    blurRadius: 22,
-                                    spreadRadius: 2,
-                                  )
-                                ]
-                              : [],
                         ),
-                        child: Column(
-                          children: [
-                            AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 300),
-                              child: Text(
-                                isBroadcasting
-                                    ? 'ACTIVE HCE NFC BROADCAST'
-                                    : 'ENTER CHARGE AMOUNT',
-                                key: ValueKey<bool>(isBroadcasting),
-                                style: AppTheme.sansBody(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: isBroadcasting
-                                      ? AppTheme.seedVaultTeal
-                                      : AppTheme.textSecondary,
-                                  letterSpacing: 1.1,
+
+                        const SizedBox(height: 20),
+
+                        // Apple-style Fluid Animated Switcher between Dial Pad & Broadcasting Radar
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 460),
+                          switchInCurve: Curves.easeOutQuart,
+                          switchOutCurve: Curves.easeInQuart,
+                          transitionBuilder:
+                              (Widget child, Animation<double> animation) {
+                            final isBroadcastingView = child.key ==
+                                const ValueKey('broadcasting_view');
+                            final offsetTween = isBroadcastingView
+                                ? Tween<Offset>(
+                                    begin: const Offset(0.0, 0.12),
+                                    end: Offset.zero,
+                                  )
+                                : Tween<Offset>(
+                                    begin: const Offset(0.0, -0.12),
+                                    end: Offset.zero,
+                                  );
+
+                            return FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(
+                                position: offsetTween.animate(CurvedAnimation(
+                                  parent: animation,
+                                  curve: Curves.easeOutCubic,
+                                )),
+                                child: child,
+                              ),
+                            );
+                          },
+                          child: isBroadcasting
+                              ? _buildBroadcastingView()
+                              : _buildDialPadView(),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // Action Button with Apple-style Fluid Morph & Color Transition
+                        StaggeredEntrance(
+                          index: 2,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 380),
+                            curve: Curves.easeInOutCubic,
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: isBroadcasting
+                                  ? const Color(0xFFE53935)
+                                  : AppTheme.seedVaultTeal,
+                              borderRadius: BorderRadius.circular(30),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: (isBroadcasting
+                                          ? const Color(0xFFE53935)
+                                          : AppTheme.seedVaultTeal)
+                                      .withValues(alpha: 0.35),
+                                  blurRadius: 18,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: AnimatedPressable(
+                              onTap: () {
+                                final bloc = context.read<TerminalBloc>();
+                                if (isBroadcasting) {
+                                  bloc.add(StopTerminalBroadcastEvent());
+                                } else {
+                                  final amt = double.tryParse(_amount) ?? 0.0;
+                                  final recipient = WalletAdapterService
+                                      .instance.currentPublicKey;
+                                  if (amt > 0 && recipient.isNotEmpty) {
+                                    bloc.add(StartTerminalBroadcastEvent(
+                                      amount: amt,
+                                      recipientPubkey: recipient,
+                                    ));
+                                  }
+                                }
+                              },
+                              child: Container(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                                alignment: Alignment.center,
+                                child: AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 320),
+                                  transitionBuilder: (child, animation) {
+                                    return FadeTransition(
+                                      opacity: animation,
+                                      child: SlideTransition(
+                                        position: Tween<Offset>(
+                                          begin: const Offset(0.0, 0.25),
+                                          end: Offset.zero,
+                                        ).animate(animation),
+                                        child: child,
+                                      ),
+                                    );
+                                  },
+                                  child: Row(
+                                    key: ValueKey<bool>(isBroadcasting),
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        isBroadcasting
+                                            ? Icons.close_rounded
+                                            : Icons.nfc_rounded,
+                                        color: AppTheme.textPrimary,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        isBroadcasting
+                                            ? 'Cancel HCE Broadcast'
+                                            : 'Start NFC Tap Broadcast',
+                                        style: AppTheme.sansBody(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppTheme.textPrimary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 8),
-                            FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.baseline,
-                                textBaseline: TextBaseline.alphabetic,
-                                children: [
-                                  Text(
-                                    _amount,
-                                    style: AppTheme.serifHeading(
-                                        fontSize: 40,
-                                        fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'SOL',
-                                    style: AppTheme.sansBody(
-                                        fontSize: 18,
-                                        color: AppTheme.textSecondary),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // Apple-style Fluid Animated Switcher between Dial Pad & Broadcasting Radar
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 460),
-                      switchInCurve: Curves.easeOutQuart,
-                      switchOutCurve: Curves.easeInQuart,
-                      transitionBuilder: (Widget child, Animation<double> animation) {
-                        final isBroadcastingView =
-                            child.key == const ValueKey('broadcasting_view');
-                        final offsetTween = isBroadcastingView
-                            ? Tween<Offset>(
-                                begin: const Offset(0.0, 0.12),
-                                end: Offset.zero,
-                              )
-                            : Tween<Offset>(
-                                begin: const Offset(0.0, -0.12),
-                                end: Offset.zero,
-                              );
-
-                        return FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(
-                            position: offsetTween.animate(CurvedAnimation(
-                              parent: animation,
-                              curve: Curves.easeOutCubic,
-                            )),
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: isBroadcasting
-                          ? _buildBroadcastingView()
-                          : _buildDialPadView(),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // Action Button with Apple-style Fluid Morph & Color Transition
-                    StaggeredEntrance(
-                      index: 2,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 380),
-                        curve: Curves.easeInOutCubic,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: isBroadcasting
-                              ? const Color(0xFFE53935)
-                              : AppTheme.seedVaultTeal,
-                          borderRadius: BorderRadius.circular(30),
-                          boxShadow: [
-                            BoxShadow(
-                              color: (isBroadcasting
-                                      ? const Color(0xFFE53935)
-                                      : AppTheme.seedVaultTeal)
-                                  .withValues(alpha: 0.35),
-                              blurRadius: 18,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: AnimatedPressable(
-                          onTap: () {
-                            final bloc = context.read<TerminalBloc>();
-                            if (isBroadcasting) {
-                              bloc.add(StopTerminalBroadcastEvent());
-                            } else {
-                              final amt = double.tryParse(_amount) ?? 0.0;
-                              final recipient = WalletAdapterService
-                                  .instance.currentPublicKey;
-                              if (amt > 0 && recipient.isNotEmpty) {
-                                bloc.add(StartTerminalBroadcastEvent(
-                                  amount: amt,
-                                  recipientPubkey: recipient,
-                                ));
-                              }
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            alignment: Alignment.center,
-                            child: AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 320),
-                              transitionBuilder: (child, animation) {
-                                return FadeTransition(
-                                  opacity: animation,
-                                  child: SlideTransition(
-                                    position: Tween<Offset>(
-                                      begin: const Offset(0.0, 0.25),
-                                      end: Offset.zero,
-                                    ).animate(animation),
-                                    child: child,
-                                  ),
-                                );
-                              },
-                              child: Row(
-                                key: ValueKey<bool>(isBroadcasting),
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    isBroadcasting
-                                        ? Icons.close_rounded
-                                        : Icons.nfc_rounded,
-                                    color: AppTheme.textPrimary,
-                                    size: 20,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    isBroadcasting
-                                        ? 'Cancel HCE Broadcast'
-                                        : 'Start NFC Tap Broadcast',
-                                    style: AppTheme.sansBody(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppTheme.textPrimary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
                           ),
                         ),
-                      ),
-                    ),
 
-                    const SizedBox(height: 12),
-                  ],
-                ),
-              ),
-            );
-          },
+                        const SizedBox(height: 12),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
         ),
-      ],
-    ),
-  ),
-);
+      ),
+    );
   }
 
   Widget _buildBroadcastingView() {
@@ -417,19 +429,7 @@ class _TerminalPageState extends State<TerminalPage> {
         crossAxisSpacing: 16,
         mainAxisSpacing: 14,
         children: [
-          ...[
-            '1',
-            '2',
-            '3',
-            '4',
-            '5',
-            '6',
-            '7',
-            '8',
-            '9',
-            '.',
-            '0'
-          ].map(
+          ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0'].map(
             (val) => _buildDialButton(
               value: val,
               subtext: _subText[val] ?? '',

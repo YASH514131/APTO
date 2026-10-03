@@ -5,10 +5,11 @@ import '../widgets/nfc_video_animation_widget.dart';
 import '../../bloc/payer_bloc.dart';
 import '../../services/nfc_reader_service.dart';
 import '../../../solana_pay/models/solana_pay_request.dart';
-import '../../../wallet/services/wallet_adapter_service.dart';
 import 'package:solana/solana.dart';
-import '../../../wallet/presentation/widgets/wallet_selector_sheet.dart';
+import '../../../wallet/services/wallet_adapter_service.dart';
+import '../../../wallet/domain/models/wallet_provider.dart';
 import '../../../rewards/presentation/dialogs/skr_scratch_reward_dialog.dart';
+import '../../../../shared/widgets/app_error_dialog.dart';
 
 class TapReaderPage extends StatefulWidget {
   const TapReaderPage({super.key});
@@ -19,6 +20,7 @@ class TapReaderPage extends StatefulWidget {
 
 class _TapReaderPageState extends State<TapReaderPage>
     with TickerProviderStateMixin {
+  late final PayerBloc _payerBloc;
   bool _isScanning = false;
   bool _showHintHand = false;
   late AnimationController _handAnimController;
@@ -33,6 +35,7 @@ class _TapReaderPageState extends State<TapReaderPage>
   @override
   void initState() {
     super.initState();
+    _payerBloc = PayerBloc();
     _handAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -69,17 +72,28 @@ class _TapReaderPageState extends State<TapReaderPage>
         _handAnimController.repeat(reverse: true);
       }
     });
+
+    // Auto-start NFC scan when arriving on Tap & Pay screen if wallet is connected
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          WalletAdapterService.instance.isConnected &&
+          !_isScanning) {
+        _startNfcScan();
+      }
+    });
   }
 
   @override
   void dispose() {
+    NfcReaderService.stop();
+    _payerBloc.close();
     _handAnimController.dispose();
     _pulseAnimController.dispose();
     _textSlideController.dispose();
     super.dispose();
   }
 
-  Future<void> _toggleNfcScan(BuildContext context) async {
+  Future<void> _toggleNfcScan() async {
     if (_isScanning) {
       await _stopNfcScan();
       return;
@@ -88,25 +102,31 @@ class _TapReaderPageState extends State<TapReaderPage>
     final isConnected = WalletAdapterService.instance.isConnected;
     final payerPublicKey = WalletAdapterService.instance.currentPublicKey;
     if (!isConnected || payerPublicKey.isEmpty) {
-      WalletSelectorSheet.show(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-            'Connect your Solana wallet first to enable tap & pay',
-            style: TextStyle(color: Colors.white, fontSize: 13),
-          ),
-          backgroundColor: AppTheme.cardBg,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFF4FA8B7), width: 1),
-          ),
-        ),
-      );
-      return;
+      await WalletAdapterService.instance
+          .selectWallet(WalletProvider.seedVault);
+      if (!WalletAdapterService.instance.isConnected) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Connect your Solana wallet first to enable tap & pay',
+                style: TextStyle(color: Colors.white, fontSize: 13),
+              ),
+              backgroundColor: AppTheme.cardBg,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFF4FA8B7), width: 1),
+              ),
+            ),
+          );
+        }
+        return;
+      }
     }
 
-    await _startNfcScan(context);
+    if (!mounted) return;
+    await _startNfcScan();
   }
 
   Future<void> _stopNfcScan() async {
@@ -123,7 +143,7 @@ class _TapReaderPageState extends State<TapReaderPage>
     }
   }
 
-  Future<void> _startNfcScan(BuildContext context) async {
+  Future<void> _startNfcScan() async {
     if (_isScanning) return;
     setState(() {
       _isScanning = true;
@@ -133,7 +153,6 @@ class _TapReaderPageState extends State<TapReaderPage>
     _pulseAnimController.repeat(reverse: true);
     _textSlideController.forward();
 
-    final payerBloc = context.read<PayerBloc>();
     final payerPublicKey = WalletAdapterService.instance.currentPublicKey;
     await NfcReaderService.scan(
       onPayload: (payload) async {
@@ -141,12 +160,34 @@ class _TapReaderPageState extends State<TapReaderPage>
         await NfcReaderService.stop();
         if (!mounted) return;
         var payloadToProcess = payload;
-        final request = SolanaPayRequest.fromApduString(payload);
-        if (request.isAddressOnly) {
+
+        SolanaPayRequest request;
+        try {
+          request = SolanaPayRequest.fromApduString(payload);
+        } catch (e) {
+          debugPrint('Error parsing NFC payload: $e');
+          final cleanAddress = payload
+              .split('|')
+              .first
+              .replaceAll('solana:', '')
+              .split('?')
+              .first
+              .replaceAll('/', '')
+              .trim();
+          request = SolanaPayRequest(
+            recipient: cleanAddress,
+            amount: 0.0,
+            reference: '',
+            timestampMs: DateTime.now().millisecondsSinceEpoch,
+            isAddressOnly: true,
+          );
+        }
+
+        if (request.isAddressOnly || request.amount <= 0) {
           // The NFC callback is owned by this mounted State.
           // ignore: use_build_context_synchronously
           final amount = await _requestRepaymentAmount(context);
-          if (!mounted || amount == null) {
+          if (!mounted || amount == null || amount <= 0) {
             if (mounted) {
               setState(() => _isScanning = false);
               _pulseAnimController.stop();
@@ -164,21 +205,22 @@ class _TapReaderPageState extends State<TapReaderPage>
           payloadToProcess =
               '${updatedRequest.toSolanaPayUrl()}|${updatedRequest.timestampMs}';
         }
-        payerBloc.add(
+
+        _payerBloc.add(
           NfcTapPayloadReceivedEvent(
             rawApduString: payloadToProcess,
             payerPublicKey: payerPublicKey,
           ),
         );
-        setState(() => _isScanning = false);
-        _pulseAnimController.stop();
-        _pulseAnimController.reset();
-        _textSlideController.reverse();
+        if (mounted) {
+          setState(() => _isScanning = false);
+          _pulseAnimController.stop();
+          _pulseAnimController.reset();
+          _textSlideController.reverse();
+        }
       },
       onError: (message) async {
         debugPrint('NFC scan session notice: $message');
-        // Do not abruptly collapse the visual card animation if NFC hardware is temporarily
-        // unavailable or times out. The user can tap to close whenever they want.
       },
     );
   }
@@ -186,14 +228,15 @@ class _TapReaderPageState extends State<TapReaderPage>
   Future<double?> _requestRepaymentAmount(BuildContext context) async {
     return showDialog<double>(
       context: context,
+      barrierDismissible: false,
       builder: (_) => const _RepaymentAmountDialog(),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (context) => PayerBloc(),
+    return BlocProvider<PayerBloc>.value(
+      value: _payerBloc,
       child: Scaffold(
         backgroundColor: const Color(0xFF031016),
         extendBodyBehindAppBar: true,
@@ -250,14 +293,13 @@ class _TapReaderPageState extends State<TapReaderPage>
                     }
                   });
                 } else if (state is PayerFailureState) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('❌ ${state.errorMessage}'),
-                      backgroundColor: state.isRelayAttackWarning
-                          ? Colors.deepOrange
-                          : Colors.red,
-                      duration: const Duration(seconds: 4),
-                    ),
+                  AppErrorDialog.show(
+                    context,
+                    title: state.isRelayAttackWarning
+                        ? 'Tap again to continue'
+                        : 'Payment not completed',
+                    technicalMessage: state.errorMessage,
+                    isWarning: state.isRelayAttackWarning,
                   );
                 } else if (state is PayerQueuedState) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -346,8 +388,7 @@ class _TapReaderPageState extends State<TapReaderPage>
                                             videoPath:
                                                 'lib/assets/vedio/nfc_wave.mp4',
                                             isRevealed: _isScanning,
-                                            onTap: () =>
-                                                _toggleNfcScan(context),
+                                            onTap: _toggleNfcScan,
                                           ),
                                         ),
                                         // Ghost hand hint
@@ -470,7 +511,7 @@ class _TapReaderPageState extends State<TapReaderPage>
       child: _isScanning
           ? GestureDetector(
               key: const ValueKey('scanning_view'),
-              onTap: () => _toggleNfcScan(context),
+              onTap: _toggleNfcScan,
               behavior: HitTestBehavior.opaque,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -557,7 +598,7 @@ class _TapReaderPageState extends State<TapReaderPage>
               builder: (context, isConnected, _) {
                 return GestureDetector(
                   key: const ValueKey('idle_view'),
-                  onTap: () => _toggleNfcScan(context),
+                  onTap: _toggleNfcScan,
                   behavior: HitTestBehavior.opaque,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
